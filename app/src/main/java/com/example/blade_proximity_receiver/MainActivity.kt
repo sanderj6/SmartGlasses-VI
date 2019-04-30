@@ -1,17 +1,25 @@
 package com.example.blade_proximity_receiver
-
 import android.support.v7.app.AppCompatActivity
 import android.bluetooth.BluetoothAdapter
 import android.os.Bundle
 import android.util.Log
 import android.bluetooth.BluetoothSocket
 import android.bluetooth.BluetoothDevice
-import android.bluetooth.BluetoothServerSocket
+import android.media.MediaPlayer
+import android.view.View.INVISIBLE
+import android.view.WindowManager
 import kotlinx.android.synthetic.main.activity_main.*
-import java.io.IOException
-import java.io.InputStream
-import java.io.OutputStream
-import kotlin.text.Charsets.US_ASCII
+import java.io.*
+import android.os.AsyncTask
+import android.os.Handler
+import android.view.View
+import org.jetbrains.anko.doAsync
+import org.jetbrains.anko.toast
+import java.util.*
+import android.widget.AdapterView
+import android.widget.AdapterView.OnItemLongClickListener
+
+
 
 
 class MainActivity : AppCompatActivity() {
@@ -19,25 +27,30 @@ class MainActivity : AppCompatActivity() {
     private var outStream: OutputStream? = null
     private var inStream: InputStream? = null
     val blueAdapter = BluetoothAdapter.getDefaultAdapter()
-    val NAME = "ServerPOS"
     val UUID = java.util.UUID.fromString("08794f7e-8d41-47f2-ad9d-be7e696884ca")
+    var socket: BluetoothSocket ?= null
+    var mmInStream: InputStream ?= null
+    val mmBuffer = ByteArray(1)
+    var outMsg = ""
+    var i = 0
+
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-        //btn_btnServerSetup.setOnClickListener{
-        //    serverSetup()
-        //}
+        callAsynchronousTask(outMsg)
 
         btn_btnConnect.setOnClickListener{
             clientConnect()
         }
 
+
     }
 
-@Throws(IOException::class)
-private fun clientConnect() {
+    @Throws(IOException::class)
+    private fun clientConnect() {
     if (blueAdapter != null) {
         if (blueAdapter.isEnabled) {
             val bondedDevices = blueAdapter.bondedDevices
@@ -46,11 +59,10 @@ private fun clientConnect() {
                 val MY_UUID = UUID
                 val devices = bondedDevices.toTypedArray() as Array<Any>
                 val device = devices[0] as BluetoothDevice
-                val uuids = device.uuids
-                var socket = device.createRfcommSocketToServiceRecord(MY_UUID)
+                socket = device.createRfcommSocketToServiceRecord(MY_UUID)
 
                 try {
-                    socket.connect()
+                    socket?.connect()
                     Log.e("", "Connected")
                 } catch (e: IOException) {
                     Log.e("", e.message)
@@ -61,16 +73,15 @@ private fun clientConnect() {
                             "createRfcommSocket",
                             *arrayOf<Class<*>>(Int::class.javaPrimitiveType!!)
                         ).invoke(device, 2) as BluetoothSocket
-                        socket.connect()
-                        val testsocket = socket
+                        socket?.connect()
                         Log.e("", "Connected")
                     } catch (e2: Exception) {
                         Log.e("", "Couldn't establish Bluetooth connection!")
                     }
 
                 }
-                textMeasurement.text = "CONNECTED"
-                readBuffer(socket) //Read incoming socket data
+                toast("Bluetooth CONNECTED")
+                btn_btnConnect.visibility = INVISIBLE
             }
         } else {
             Log.e("error", "Bluetooth is disabled.")
@@ -78,65 +89,80 @@ private fun clientConnect() {
     }
 }
 
-private fun readBuffer(s: BluetoothSocket){
-    val mmInStream: InputStream = s.inputStream
-    val mmBuffer = ByteArray(1024) // mmBuffer store for the stream
-    val mmBufferOutput = ByteArray(1024) // mmBuffer store for the stream
-    var numBytes: Int // bytes returned from read()
+    fun callAsynchronousTask(result: String?) {
+        val handler = Handler()
+        val timer = Timer()
+        val doAsynchronousTask = object : TimerTask() {
+            override fun run() {
+                handler.post(Runnable {
+                    try {
+                        doAsync{
+                            mmInStream = socket!!.inputStream
+                            mmInStream?.read(mmBuffer)
 
+                            if (mmBuffer.toTypedArray()[0] > 0) {
 
-    // Listen for Input Stream
-    while (true) {
-        numBytes = try {
-            mmInStream.read(mmBuffer)
-        } catch (e: IOException) {
-            //Log.d(TAG, "Input stream was disconnected", e)
-            break
+                                // Parse buffer and update UI
+                                val readMsg = mmBuffer.toTypedArray()[0]
+                                val readMsg2 = readMsg.toInt()
+                                outMsg = readMsg2.toString() + "m"
+                                runOnUiThread() { textMeasurement.text = outMsg }
+                            }
+
+                        }
+                    } catch (e: Exception) {
+                        // TODO Auto-generated catch block
+                        val testbreak = "butt"
+                    }
+                })
+            }
         }
-
-        // Parse buffer and update UI
-        var i: Int = 0//iterator
-
-        while (mmBuffer[i].toString() != "35"){
-            mmBufferOutput[i] = mmBuffer[i]
-            i++
-        }
-        val readMsg = mmBufferOutput.toString()
-        textMeasurement.text = readMsg
-    }
-}
-
-private fun serverSetup() {
-
-    var socket: BluetoothSocket ?= null
-    val mmServerSocket: BluetoothServerSocket? by lazy(LazyThreadSafetyMode.NONE) { //Bluetooth Server Socket Setup
-        blueAdapter?.listenUsingInsecureRfcommWithServiceRecord(NAME, UUID)
+        timer.schedule(doAsynchronousTask, 0, 1000) //execute in every 1000 ms
     }
 
-    // Listen for Socket
-    var shouldLoop = true
-    while (shouldLoop) {
-        socket = try {
-            mmServerSocket?.accept() //Accept Socket, create connection
-        } catch (e: IOException) {
-            //Log.e(TAG, "Socket's accept() method failed", e)
-            shouldLoop = false
-            null
+    internal inner class ReadBuffer : AsyncTask<Void, String, String>() {
+        var numcycles: Int = 0  //total number of times to execute process
+
+        override fun onPreExecute() {
+            //Executes in UI thread before task begins
+            btn_btnConnect.text = "..."
         }
-        socket?.also {
-            //manageMyConnectedSocket(it)
-            mmServerSocket?.close()
-            shouldLoop = false
+
+        override fun doInBackground(vararg arg0: Void): String {
+            //Runs in a background thread
+            //Used to run code that could block the UI
+            var outMsg = ""
+
+            try {
+                mmInStream = socket!!.inputStream
+                mmInStream?.read(mmBuffer)
+
+                if(mmBuffer.toTypedArray()[0] > 0){
+
+                    // Parse buffer and update UI
+                    val readMsg = mmBuffer.toTypedArray()[0]
+                    val readMsg2 = readMsg.toInt()
+                    outMsg = readMsg2.toString() + "m"
+
+                }
+            } catch (e: IOException) {
+                Log.d("Bluetooth no work", "Input stream was disconnected", e)
+                throw e
+            }
+            //publishProgress(outMsg)
+            return outMsg
+        }
+
+        override fun onProgressUpdate(vararg values: String) {
+            textMeasurement.text = values.toString()
+            super.onProgressUpdate(*values)
+        }
+        override fun onPostExecute(result: String?) {
+            //result comes from return value of doInBackground
+            //runs on UI thread, not called if task cancelled
+            btn_btnConnect.text = "done"
+            textMeasurement.text = result
+            btn_btnConnect.visibility = INVISIBLE
         }
     }
-
-    //Declare Output Stream
-    outStream = socket?.outputStream
-
-    val teststring = "butt" //**REPLACE WITH DISTANCEmm + #
-    while(true) {
-        outStream!!.write(teststring.toByteArray())
-    }
-}
-
 }
